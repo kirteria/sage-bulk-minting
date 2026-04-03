@@ -48,6 +48,7 @@ interface MintedNFT {
   editionNumber: number;
   imageUri: string;
   launcherId: string;
+  name: string;
 }
 
 export default function Home() {
@@ -139,6 +140,27 @@ export default function Home() {
     }));
   }, [filteredMintedNfts]);
 
+  useEffect(() => {
+    if (!selectedCollection) return;
+    
+    const mintedEditions = new Set(filteredMintedNfts.map(n => n.editionNumber));
+    const highestEdition = filteredMintedNfts.length > 0 
+      ? Math.max(...filteredMintedNfts.map(n => n.editionNumber))
+      : 0;
+
+    setNftItems(Array.from({ length: MINT_CONFIG.totalSupply }, (_, i) => {
+      const id = i + 1;
+      if (mintedEditions.has(id) || id <= highestEdition) {
+        return { id, status: 'minted' as MintStatus };
+      }
+      return { id, status: 'pending' as MintStatus };
+    }));
+    
+    setIsConfirming(false);
+    setIsMinting(false);
+    setIsPausing(false);
+  }, [selectedCollection]);
+
   const totalBatches = Math.ceil(MINT_CONFIG.totalSupply / MINT_CONFIG.batchSize);
   const mintedCount = filteredMintedNfts.length;
   const confirmingCount = nftItems.filter(n => n.status === 'confirming').length;
@@ -151,18 +173,17 @@ export default function Home() {
   const progress = (highestMintedEdition / MINT_CONFIG.totalSupply) * 100;
 
   const nextBatchToMint = useMemo(() => {
-    for (let batch = 0; batch < totalBatches; batch++) {
-      const startIdx = batch * MINT_CONFIG.batchSize;
-      const endIdx = Math.min(startIdx + MINT_CONFIG.batchSize, MINT_CONFIG.totalSupply);
-      const batchItems = nftItems.slice(startIdx, endIdx);
-      const hasPending = batchItems.some(item => item.status === 'pending');
-      const hasConfirming = batchItems.some(item => item.status === 'confirming');
-      if (hasPending && !hasConfirming) {
-        return batch;
-      }
-    }
-    return -1; // All minted or confirming
-  }, [nftItems, totalBatches]);
+    const hasPending = nftItems.some(item => item.status === 'pending');
+    const hasConfirming = nftItems.some(item => item.status === 'confirming');
+    if (hasPending && !hasConfirming) return 0;
+    return -1;
+  }, [nftItems]);
+
+  const currentMintingItems = useMemo(() => {
+    const items = nftItems.filter(item => item.status === 'minting' || item.status === 'confirming');
+    if (items.length > 0) return items;
+    return nftItems.filter(item => item.status === 'pending').slice(0, MINT_CONFIG.batchSize);
+  }, [nftItems]);
 
   useEffect(() => {
     if (initCalled.current) return;
@@ -197,17 +218,25 @@ export default function Home() {
       }
       
       const allNftsWithCollection = allNfts
-        .filter((nft: any) => nft.editionNumber > 0)
+        .filter((nft: any) => {
+          const edition = nft.editionNumber ?? nft.edition_number ?? 0;
+          return edition > 0;
+        })
         .map((nft: any) => {
-          const uri = nft.dataUris?.[0];
+          const uri = nft.dataUris?.[0] ?? nft.data_uris?.[0];
+          const edition = nft.editionNumber ?? nft.edition_number ?? 0;
+          const launcher = nft.launcherId ?? nft.launcher_id ?? '';
+          const colId = nft.collectionId ?? nft.collection_id ?? 'unknown';
+          const nftName = nft.name ?? '';
           return {
             nft: {
-              nftId: nft.launcherId ?? '',
-              editionNumber: nft.editionNumber ?? 0,
+              nftId: launcher,
+              editionNumber: edition,
               imageUri: uri && typeof uri === 'string' && uri.trim() ? uri.trim() : '',
-              launcherId: nft.launcherId ?? '',
+              launcherId: launcher,
+              name: nftName,
             },
-            collectionId: nft.collectionId ?? 'unknown',
+            collectionId: colId,
           };
         });
       
@@ -215,12 +244,12 @@ export default function Home() {
       
       const collectionMap = new Map<string, {id: string; name: string; imageUri: string; count: number}>();
       allNfts.forEach((nft: any) => {
-        const colId = nft.collectionId ?? 'unknown';
+        const colId = nft.collectionId ?? nft.collection_id ?? 'unknown';
         if (!collectionMap.has(colId)) {
           collectionMap.set(colId, {
             id: colId,
-            name: nft.collectionName ?? '',
-            imageUri: nft.dataUris?.[0] || '',
+            name: nft.collectionName ?? nft.collection_name ?? '',
+            imageUri: nft.dataUris?.[0] ?? nft.data_uris?.[0] ?? '',
             count: 1,
           });
         } else {
@@ -231,10 +260,8 @@ export default function Home() {
       setCollections(uniqueCollections);
       
       const collectionIds = uniqueCollections.map(c => c.id);
-      if (!selectedCollection || !collectionIds.includes(selectedCollection)) {
-        if (uniqueCollections.length > 0) {
-          setSelectedCollection(uniqueCollections[0].id);
-        }
+      if (selectedCollection && !collectionIds.includes(selectedCollection)) {
+        setSelectedCollection(null);
       }
       
       return allNftsWithCollection;
@@ -302,10 +329,9 @@ export default function Home() {
     setMintError(null);
     setCurrentBatch(batchIndex);
 
-    const startIdx = batchIndex * MINT_CONFIG.batchSize;
-    const endIdx = Math.min(startIdx + MINT_CONFIG.batchSize, MINT_CONFIG.totalSupply);
-    
-    const batchItems = nftItems.slice(startIdx, endIdx).filter(item => item.status === 'pending');
+    const batchItems = nftItems
+      .filter(item => item.status === 'pending')
+      .slice(0, MINT_CONFIG.batchSize);
     
     if (batchItems.length === 0) {
       setIsMinting(false);
@@ -404,7 +430,7 @@ export default function Home() {
       setIsMinting(false);
       setIsConfirming(true);
 
-      await new Promise(resolve => setTimeout(resolve, 60000));
+      await new Promise(resolve => setTimeout(resolve, 45000));
 
       await fetchMintedNfts();
 
@@ -592,8 +618,8 @@ export default function Home() {
                         ? 'All NFTs Minted!' 
                         : isConfirming
                         ? 'Waiting for confirmation...'
-                        : isMinting 
-                        ? `Minting #${currentBatch * MINT_CONFIG.batchSize + 1} - #${Math.min((currentBatch + 1) * MINT_CONFIG.batchSize, MINT_CONFIG.totalSupply)}...`
+                        : isMinting && currentMintingItems.length > 0
+                        ? `Minting #${currentMintingItems[0].id} - #${currentMintingItems[currentMintingItems.length - 1].id}...`
                         : autoMint
                         ? 'Auto-minting in progress'
                         : 'Ready to mint'}
@@ -688,9 +714,10 @@ export default function Home() {
                     <div className="relative">
                       <select
                         value={selectedCollection || ''}
-                        onChange={(e) => setSelectedCollection(e.target.value)}
+                        onChange={(e) => setSelectedCollection(e.target.value || null)}
                         className="appearance-none px-3 pr-8 py-1.5 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 cursor-pointer"
                       >
+                        <option value="">No Selected</option>
                         {collections.map((col, idx) => (
                           <option key={`${col.id}-${idx}`} value={col.id}>
                             {col.name || `${col.id.slice(0, 6)}...${col.id.slice(-4)}`} ({allNftsData.filter(n => n.collectionId === col.id).length})
@@ -759,7 +786,17 @@ export default function Home() {
                         </div>
                         <div className="p-2 md:p-3 space-y-1 md:space-y-2">
                           <div className="flex items-center justify-between">
-                            <span className="font-medium text-xs md:text-sm">#{nft.editionNumber}</span>
+                            <span className="font-medium text-xs md:text-sm truncate max-w-[60%]" title={nft.name || 'No name'}>
+                              {nft.name || 'No name'}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {nft.editionNumber > 0 ? `#${nft.editionNumber}` : 'null'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <p className="text-[10px] md:text-xs text-muted-foreground truncate max-w-[80%]" title={nft.nftId}>
+                              {nft.nftId.slice(0, 8)}...{nft.nftId.slice(-6)}
+                            </p>
                             <a
                               href={`${MINT_CONFIG.spacescanBase}${nft.nftId}`}
                               target="_blank"
@@ -769,9 +806,6 @@ export default function Home() {
                               <ExternalLink className="w-3 h-3 md:w-4 md:h-4" />
                             </a>
                           </div>
-                          <p className="text-[10px] md:text-xs text-muted-foreground truncate" title={nft.nftId}>
-                            {nft.nftId.slice(0, 8)}...{nft.nftId.slice(-6)}
-                          </p>
                         </div>
                       </div>
                     ))}
@@ -1001,7 +1035,7 @@ export default function Home() {
 
         <footer className="border-t border-border py-6 md:py-8">
           <p className="text-center text-xs sm:text-sm text-muted-foreground">
-            Sage &copy; {new Date().getFullYear()} All rights Reserved.
+            Sage &copy; {new Date().getFullYear()} All Rights Reserved.
           </p>
         </footer>
       </div>
