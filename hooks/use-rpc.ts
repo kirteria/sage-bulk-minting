@@ -46,7 +46,7 @@ export const useRpc = () => {
           name: 'Sage - Bulk Minting',
           description: 'Tools for bulk minting nfts on chia network',
           url: typeof window !== 'undefined' ? window.location.origin : '',
-          icons: ['https://walletconnect.com/walletconnect-logo.png'],
+          icons: ['https://raw.githubusercontent.com/WalletConnect/walletconnect-assets/refs/heads/master/Icon/Blue%20(Default)/Icon.png'],
         },
       });
 
