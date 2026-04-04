@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react'; 
 import Image from 'next/image';
 import { useRpc } from '@/hooks/use-rpc';
 import { QrModal } from '@/components/qr-modal';
@@ -54,7 +54,7 @@ interface MintedNFT {
 export default function Home() {
   const rpc = useRpc();
   const rpcRef = useRef(rpc);
-  rpcRef.current = rpc;
+  rpcRef.current = rpc; // Always keep ref up to date
   const initCalled = useRef(false);
   
   const [activeTab, setActiveTab] = useState<Tab>('bulk-mint');
@@ -73,17 +73,23 @@ export default function Home() {
   const [isRejected, setIsRejected] = useState(false);
   const [isPausing, setIsPausing] = useState(false);
   const [isFetchingNfts, setIsFetchingNfts] = useState(false);
+  const [isInitialFetching, setIsInitialFetching] = useState(false);
   const [allNftsData, setAllNftsData] = useState<{nft: MintedNFT; collectionId: string}[]>([]);
   const [collections, setCollections] = useState<{id: string; name: string; imageUri: string}[]>([]);
   const [selectedCollection, setSelectedCollection] = useState<string | null>(null);
   
   const [offerPrice, setOfferPrice] = useState('0.1');
   const [isCreatingOffers, setIsCreatingOffers] = useState(false);
-  const [createdOffers, setCreatedOffers] = useState<{offer: string; editionNumber: number}[]>([]);
+  const [createdOffers, setCreatedOffers] = useState<{offer: string; editionNumber: number; launcherId: string; name: string; collectionId: string | null}[]>([]);
   const [offerProgress, setOfferProgress] = useState(0);
   const [isOfferPausing, setIsOfferPausing] = useState(false);
   const [offerStopped, setOfferStopped] = useState(false);
   const offerPauseRef = useRef(false);
+  
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [downloadFrom, setDownloadFrom] = useState(1);
+  const [downloadTo, setDownloadTo] = useState(1);
 
   useEffect(() => {
     if (rpc.fingerprint) {
@@ -107,22 +113,26 @@ export default function Home() {
     }
   }, [createdOffers, rpc.fingerprint]);
 
-  const highestOfferEdition = useMemo(() => {
-    if (createdOffers.length === 0) return 0;
-    return Math.max(...createdOffers.map(o => o.editionNumber));
-  }, [createdOffers]);
-
-  const nftsWithoutOffers = useMemo(() => {
-    const offerEditions = new Set(createdOffers.map(o => o.editionNumber));
-    return mintedNfts.filter(nft => !offerEditions.has(nft.editionNumber));
-  }, [mintedNfts, createdOffers]);
-
   const filteredMintedNfts = useMemo(() => {
     if (!selectedCollection) return [];
     return allNftsData
       .filter(n => n.collectionId === selectedCollection)
       .map(n => n.nft);
   }, [allNftsData, selectedCollection]);
+
+  const filteredOffers = useMemo(() => {
+    return createdOffers.filter(o => o.collectionId === selectedCollection);
+  }, [createdOffers, selectedCollection]);
+
+  const highestOfferEdition = useMemo(() => {
+    if (filteredOffers.length === 0) return 0;
+    return Math.max(...filteredOffers.map(o => o.editionNumber));
+  }, [filteredOffers]);
+
+  const nftsWithoutOffers = useMemo(() => {
+    const offerLaunchers = new Set(filteredOffers.map(o => o.launcherId));
+    return filteredMintedNfts.filter(nft => !offerLaunchers.has(nft.launcherId));
+  }, [filteredMintedNfts, filteredOffers]);
 
   useEffect(() => {
     setMintedNfts(filteredMintedNfts);
@@ -218,10 +228,6 @@ export default function Home() {
       }
       
       const allNftsWithCollection = allNfts
-        .filter((nft: any) => {
-          const edition = nft.editionNumber ?? nft.edition_number ?? 0;
-          return edition > 0;
-        })
         .map((nft: any) => {
           const uri = nft.dataUris?.[0] ?? nft.data_uris?.[0];
           const edition = nft.editionNumber ?? nft.edition_number ?? 0;
@@ -275,11 +281,25 @@ export default function Home() {
   const hasSession = Boolean(rpc.session);
   const canAutoMint = autoMint && !isMinting && !isConfirming && nextBatchToMint !== -1 && hasSession;
   const initialFetchDone = useRef(false);
+  
+  const selectedCollectionIsAllowed = useMemo(() => {
+    if (!selectedCollection) return true;
+    const collectionNfts = allNftsData.filter(n => n.collectionId === selectedCollection);
+    if (collectionNfts.length === 0) return true;
+    const editionCounts: Record<number, number> = {};
+    collectionNfts.forEach(n => {
+      const edition = Number(n.nft.editionNumber) || 0;
+      editionCounts[edition] = (editionCounts[edition] || 0) + 1;
+    });
+    const hasDuplicateEditions = Object.values(editionCounts).some(count => count >= 3);
+    return !hasDuplicateEditions;
+  }, [selectedCollection, allNftsData]);
 
   useEffect(() => {
     if (hasSession && !initialFetchDone.current && mintedNfts.length === 0) {
       initialFetchDone.current = true;
-      fetchMintedNfts();
+      setIsInitialFetching(true);
+      fetchMintedNfts().finally(() => setIsInitialFetching(false));
     } else if (hasSession && !initialFetchDone.current && mintedNfts.length > 0) {
       initialFetchDone.current = true;
     }
@@ -292,6 +312,7 @@ export default function Home() {
       setNftItems(prev => prev.map(item => ({ ...item, status: 'pending' as MintStatus, nftId: undefined, error: undefined })));
       setAutoMint(false);
       setMintError(null);
+      setIsInitialFetching(false);
     }
   }, [hasSession, fetchMintedNfts, mintedNfts.length]);
 
@@ -659,10 +680,14 @@ export default function Home() {
                           }
                         }
                       }}
-                      disabled={!rpc.session || isMinting || isConfirming || autoMint || isRejected}
+                      disabled={!rpc.session || isMinting || isConfirming || autoMint || isRejected || isInitialFetching || (selectedCollection && !selectedCollectionIsAllowed)}
                     >
                       {isRejected ? (
                         <>Rejected</>
+                      ) : isInitialFetching ? (
+                        <><Loader2 className="w-5 h-5 animate-spin" />Fletching Data...</>
+                      ) : selectedCollection && !selectedCollectionIsAllowed ? (
+                        <>Not Allowed</>
                       ) : isConfirming ? (
                         <><Loader2 className="w-5 h-5 animate-spin" />Confirming...</>
                       ) : isMinting ? (
@@ -711,18 +736,23 @@ export default function Home() {
                 <h2 className="text-2xl sm:text-3xl md:text-4xl font-semibold">Minted NFTs</h2>
                 <div className="flex items-center justify-between gap-4">
                   {collections.length > 0 ? (
-                    <div className="relative">
+                    <div className="relative max-w-[200px] sm:max-w-[250px] md:max-w-[300px]">
                       <select
                         value={selectedCollection || ''}
                         onChange={(e) => setSelectedCollection(e.target.value || null)}
-                        className="appearance-none px-3 pr-8 py-1.5 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 cursor-pointer"
+                        className="appearance-none w-full px-3 pr-8 py-1.5 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 cursor-pointer truncate"
                       >
-                        <option value="">No Selected</option>
-                        {collections.map((col, idx) => (
-                          <option key={`${col.id}-${idx}`} value={col.id}>
-                            {col.name || `${col.id.slice(0, 6)}...${col.id.slice(-4)}`} ({allNftsData.filter(n => n.collectionId === col.id).length})
-                          </option>
-                        ))}
+                        <option value="">New Collection</option>
+                        {collections.map((col, idx) => {
+                          const name = col.name || `${col.id.slice(0, 6)}...${col.id.slice(-4)}`;
+                          const count = allNftsData.filter(n => n.collectionId === col.id).length;
+                          const displayName = name.length > 20 ? `${name.slice(0, 20)}...` : name;
+                          return (
+                            <option key={`${col.id}-${idx}`} value={col.id}>
+                              {displayName} ({count})
+                            </option>
+                          );
+                        })}
                       </select>
                       <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-muted-foreground" />
                     </div>
@@ -790,7 +820,7 @@ export default function Home() {
                               {nft.name || 'No name'}
                             </span>
                             <span className="text-xs text-muted-foreground">
-                              {nft.editionNumber > 0 ? `#${nft.editionNumber}` : 'null'}
+                              {nft.editionNumber > 0 ? `#${nft.editionNumber}` : 'None'}
                             </span>
                           </div>
                           <div className="flex items-center justify-between">
@@ -873,7 +903,7 @@ export default function Home() {
                             }
                             
                             const nft = nftsToProcess[i];
-                            setOfferProgress(createdOffers.length + i + 1);
+                            setOfferProgress(filteredOffers.length + i + 1);
                             
                             try {
                               const priceNumber = Math.floor(parseFloat(offerPrice) * 1_000_000_000_000);
@@ -896,9 +926,9 @@ export default function Home() {
                                 return;
                               }
                               
-                              if (result?.offer) {
-                                setCreatedOffers(prev => [...prev, { offer: result.offer, editionNumber: nft.editionNumber }]);
-                              }
+                               if (result?.offer) {
+                               setCreatedOffers(prev => [...prev, { offer: result.offer, editionNumber: nft.editionNumber, launcherId: nft.launcherId, name: nft.name, collectionId: selectedCollection }]);
+                               }
                             } catch (err: any) {
                               const errorMsg = err?.message ?? String(err);
                               const isUserRejection = 
@@ -935,7 +965,7 @@ export default function Home() {
                       ) : nftsWithoutOffers.length === 0 ? (
                         mintedNfts.length === 0 ? 'No NFTs to offer' : 'All offers created'
                       ) : (
-                        createdOffers.length > 0 ? 'Continue Creating' : 'Start Creating'
+                        filteredOffers.length > 0 ? 'Continue Creating' : 'Start Creating'
                       )}
                     </Button>
                     <Button
@@ -959,58 +989,50 @@ export default function Home() {
 
                 <div className="bg-card border border-border rounded-xl p-6 md:p-12">
                   <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-lg md:text-2xl font-semibold">Offers History ({createdOffers.length})</h3>
+                    <h3 className="text-lg md:text-2xl font-semibold">Offers History ({filteredOffers.length})</h3>
                     <div className="flex items-center gap-2">
                       <Button
                         variant="ghost"
                         size="sm"
-                        disabled={createdOffers.length === 0}
-                        onClick={() => {
-                          if (rpc.fingerprint) {
-                            const storageKey = `offers_${rpc.fingerprint}`;
-                            localStorage.removeItem(storageKey);
-                          }
-                          setCreatedOffers([]);
-                        }}
+                        disabled={filteredOffers.length === 0}
+                        onClick={() => setShowDeleteModal(true)}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="sm"
-                        disabled={createdOffers.length === 0}
-                        onClick={async () => {
-                          const JSZip = (await import('jszip')).default;
-                          const zip = new JSZip();
-                          createdOffers.forEach((item) => {
-                            zip.file(`${item.editionNumber}.offer`, item.offer);
-                          });
-                          const blob = await zip.generateAsync({ type: 'blob' });
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement('a');
-                          a.href = url;
-                          a.download = 'offers.zip';
-                          a.click();
-                          URL.revokeObjectURL(url);
+                        disabled={filteredOffers.length === 0}
+                        onClick={() => {
+                          setDownloadFrom(1);
+                          setDownloadTo(filteredOffers.length);
+                          setShowDownloadModal(true);
                         }}
                       >
                         <Download className="w-4 h-4" />
                       </Button>
                     </div>
                   </div>
-                  {createdOffers.length === 0 ? (
+                  {filteredOffers.length === 0 ? (
                     <p className="text-muted-foreground">No offers created yet</p>
                   ) : (
                     <div className="space-y-3">
-                      {createdOffers
-                        .sort((a, b) => a.editionNumber - b.editionNumber)
+                      {filteredOffers
+                        .sort((a, b) => {
+                          if (a.editionNumber > 0 && b.editionNumber > 0) return a.editionNumber - b.editionNumber;
+                          if (a.editionNumber > 0) return -1;
+                          if (b.editionNumber > 0) return 1;
+                          return (a.name || '').localeCompare(b.name || '');
+                        })
                         .map((item, index) => (
                         <div
-                          key={`offer-${item.editionNumber}-${index}-${item.offer.slice(-8)}`}
+                          key={`offer-${item.launcherId}-${index}-${item.offer.slice(-8)}`}
                           className="flex items-center justify-between p-3 md:p-4 rounded-lg bg-secondary/50 border border-border"
                         >
                           <div className="flex items-center gap-3 min-w-0">
-                            <span className="text-sm md:text-base font-medium text-primary shrink-0">#{item.editionNumber}</span>
+                            <span className="text-sm md:text-base font-medium text-primary shrink-0">
+                              #{item.editionNumber}
+                            </span>
                             <span className="text-sm md:text-base font-mono truncate">
                               {item.offer.slice(0, 16)}...{item.offer.slice(-8)}
                             </span>
@@ -1018,6 +1040,7 @@ export default function Home() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            className="shrink-0 ml-auto"
                             onClick={() => navigator.clipboard.writeText(item.offer)}
                           >
                             Copy
@@ -1034,11 +1057,120 @@ export default function Home() {
         </main>
 
         <footer className="border-t border-border py-6 md:py-8">
-          <p className="text-center text-xs sm:text-sm text-muted-foreground">
-            Sage &copy; {new Date().getFullYear()} All Rights Reserved.
-          </p>
-        </footer>
+         <p className="text-center text-xs sm:text-sm text-muted-foreground">
+            Made with 💚 by{' '}
+           <a
+             href="https://x.com/xkirteria"
+             target="_blank"
+             rel="noopener noreferrer"
+             className="text-green-500"
+            >
+             Kirteria
+          </a>
+        </p>
+      </footer>
       </div>
+
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4">Delete Offers?</h3>
+            <p className="text-muted-foreground mb-6">Are you sure you want to delete offer history for this collection? This action cannot be undone.</p>
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setShowDeleteModal(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  const remaining = createdOffers.filter(o => o.collectionId !== selectedCollection);
+                  setCreatedOffers(remaining);
+                  setShowDeleteModal(false);
+                }}
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDownloadModal && (() => {
+        const sortedOffers = [...filteredOffers].sort((a, b) => {
+          if (a.editionNumber > 0 && b.editionNumber > 0) return a.editionNumber - b.editionNumber;
+          if (a.editionNumber > 0) return -1;
+          if (b.editionNumber > 0) return 1;
+          return (a.name || '').localeCompare(b.name || '');
+        });
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full mx-4">
+              <h3 className="text-lg font-semibold mb-4">Download Offers</h3>
+              <p className="text-muted-foreground mb-4">Select range to download</p>
+              <div className="flex items-center gap-3 mb-6">
+                <div className="flex-1">
+                  <label className="text-sm text-muted-foreground mb-1 block">From</label>
+                  <select
+                    value={downloadFrom}
+                    onChange={(e) => setDownloadFrom(parseInt(e.target.value))}
+                    className="w-full px-3 py-2 rounded-md border border-border bg-background text-foreground"
+                  >
+                    {sortedOffers.map((item, idx) => (
+                      <option key={`from-${idx}`} value={idx + 1}>
+                        {item.editionNumber > 0 ? `#${item.editionNumber}` : item.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <span className="text-muted-foreground pt-5">to</span>
+                <div className="flex-1">
+                  <label className="text-sm text-muted-foreground mb-1 block">To</label>
+                  <select
+                    value={downloadTo}
+                    onChange={(e) => setDownloadTo(parseInt(e.target.value))}
+                    className="w-full px-3 py-2 rounded-md border border-border bg-background text-foreground"
+                  >
+                    {sortedOffers.map((item, idx) => (
+                      <option key={`to-${idx}`} value={idx + 1}>
+                        {item.editionNumber > 0 ? `#${item.editionNumber}` : item.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex justify-end gap-3">
+                <Button variant="outline" onClick={() => setShowDownloadModal(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={async () => {
+                    const JSZip = (await import('jszip')).default;
+                    const zip = new JSZip();
+                    const start = Math.max(0, downloadFrom - 1);
+                    const end = Math.min(sortedOffers.length, downloadTo);
+                    sortedOffers.slice(start, end).forEach((item) => {
+                      const fileName = item.editionNumber > 0 
+                        ? `${item.editionNumber}.offer` 
+                        : `${item.name.replace(/\s+/g, '-')}.offer`;
+                      zip.file(fileName, item.offer);
+                    });
+                    const blob = await zip.generateAsync({ type: 'blob' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `offers-${downloadFrom}-to-${downloadTo}.zip`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    setShowDownloadModal(false);
+                  }}
+                >
+                  Download
+                </Button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </>
   );
 }
